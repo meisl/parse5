@@ -1,13 +1,26 @@
 'use strict';
 
 const assert = require('assert');
+const util = require('util');
 const Tokenizer = require('../lib/tokenizer');
 const LocationInfoTokenizerMixin = require('../lib/extensions/location-info/tokenizer-mixin');
 const Mixin = require('../lib/utils/mixin');
-const { getSubstringByLineCol, normalizeNewLine } = require('../../../test/utils/common');
+const { getSubstringByLineCol, normalizeNewLine, addSlashes } = require('../../../test/utils/common');
+
+// cross product of two arrays
+function cross(arr1, arr2) {
+    const res = [];
+    for (const a of arr1) {
+        for (const b of arr2) {
+            res.push([a, b]);
+        }
+    }
+    return res;
+}
 
 const testCases = [
     {
+        description: 'complete document',
         initialMode: Tokenizer.MODE.DATA,
         lastStartTagName: '',
         htmlChunks: [
@@ -80,24 +93,49 @@ const testCases = [
         htmlChunks: ['Text', ' \n', 'Test</plaintext><div>']
     },
     {
+        description: 'non-whiteSpace char ref after whitespace',
         initialMode: Tokenizer.MODE.DATA,
         lastStartTagName: 'body',
-        htmlChunks: ['\t', '&lt;']
+        htmlChunks: cross(['\f', '\t', '\n', ' '], ['&lt;', '&#60;', '&#x60;']).reduce((acc, e) => acc.concat(e), []) // flatten
     },
     {
+        description: '&nbsp; after whitespace',
         initialMode: Tokenizer.MODE.DATA,
         lastStartTagName: 'body',
-        htmlChunks: ['\n', '&lt;']
+        htmlChunks: cross(['\f', '\t', '\n', ' '], ['&nbsp;', '&#160;', '&#xA0;']).reduce((acc, e) => acc.concat(e), []) // flatten
     },
     {
+        description: 'whiteSpace char ref after whitespace',
         initialMode: Tokenizer.MODE.DATA,
         lastStartTagName: 'body',
-        htmlChunks: ['foo', '&Tab;']
+        htmlChunks: [
+            cross(
+                ['\f', '\t', '\n', ' '],
+                ['&Tab;', '&#9;', '&#x9;', '&NewLine;', '&#10;', '&#xA;', '&#12;', '&#xC;', '&#32;', '&#x20;']
+            )
+                .map(pair => pair.join(''))
+                .join('')
+        ]
+    },
+    {
+        description: 'non-whiteSpace char ref after non-whitespace',
+        initialMode: Tokenizer.MODE.DATA,
+        lastStartTagName: 'body',
+        htmlChunks: ['foo&lt;bar&#60;qmbl&#x3C;']
+    },
+    {
+        description: '&nbsp; after non-whitespace',
+        initialMode: Tokenizer.MODE.DATA,
+        lastStartTagName: 'body',
+        htmlChunks: ['foo&nbsp;bar&#160;qmbl&#xA0;']
     }
 ];
 
 testCases.forEach((testCase, idx) => {
-    const testName = `Location info (Tokenizer) ${idx}. - [${testCase.initialMode}/${testCase.lastStartTagName}]`;
+    const testName =
+        `Location info (Tokenizer) ${idx}.` +
+        ` - [${testCase.initialMode}/${testCase.lastStartTagName}]` +
+        ` ${testCase.description || ''}`;
     exports[testName] = function() {
         const html = testCase.htmlChunks.join('');
         const lines = html.split(/\r?\n/g);
@@ -115,25 +153,68 @@ testCases.forEach((testCase, idx) => {
         tokenizer.state = testCase.initialMode;
         tokenizer.lastStartTagName = testCase.lastStartTagName;
 
-        for (let token = tokenizer.getNextToken(), j = 0; token.type !== Tokenizer.EOF_TOKEN; ) {
-            if (token.type === Tokenizer.HIBERNATION_TOKEN) {
+        let exp = {
+            startOffset: 0,
+            startLine: 1,
+            startCol: 1,
+            endOffset: 0,
+            endLine: 1,
+            endCol: 1
+        };
+
+        let nextToken = tokenizer.getNextToken();
+        let j = 0;
+        while (nextToken.type !== Tokenizer.EOF_TOKEN) {
+            let currentToken = nextToken;
+            nextToken = tokenizer.getNextToken();
+            if (currentToken.type === Tokenizer.HIBERNATION_TOKEN) {
                 continue;
             }
 
-            //Offsets
-            let actual = html.substring(token.location.startOffset, token.location.endOffset);
+            const srcChunk = testCase.htmlChunks[j++];
 
-            assert.strictEqual(actual, testCase.htmlChunks[j]);
+            exp.startOffset = exp.endOffset;
+            exp.endOffset += srcChunk.length;
+            // The \n itself - emitted as (part of) a WHITESPACE_CHARACTER_TOKEN - is considered
+            // the very last character of a line, and the new line starts right after it.
+            // Therefore the next token's startLine is the previous token's endLine,
+            // and likewise for startCol and endCol.
+            exp.startLine = exp.endLine;
+            exp.startCol = exp.endCol;
+            for (const ch of srcChunk) {
+                if (ch === '\n') {
+                    exp.endCol = 1;
+                    exp.endLine++;
+                } else {
+                    exp.endCol++;
+                }
+            }
 
-            //Line/col
-            actual = getSubstringByLineCol(lines, token.location);
+            const tokensStr = `\n\ncurrent token: ${util.inspect(currentToken)}\nnext token: ${util.inspect(
+                nextToken
+            )}\n`;
+            assert.deepStrictEqual(
+                currentToken.location,
+                exp,
+                `location @ source chunk #${j - 1}` +
+                    `\nchunk #${j - 1}: '${addSlashes(srcChunk)}'` +
+                    `\ntoken #${j - 1}: ${util.inspect(currentToken)}\n` +
+                    `\nchunk #${j}: ${
+                        j == testCase.htmlChunks.length ? '-' : "'" + addSlashes(testCase.htmlChunks[j]) + "'"
+                    }` +
+                    `\ntoken #${j}: ${util.inspect(nextToken)}\n`
+            );
 
-            const expected = normalizeNewLine(testCase.htmlChunks[j]);
+            // // The old assertions; comment-in for sanity-checking
+            // //Offsets
+            // let actual = html.substring(currentToken.location.startOffset, currentToken.location.endOffset);
+            // let expected = srcChunk;
+            // assert.strictEqual(actual, expected);
 
-            assert.strictEqual(actual, expected);
-
-            token = tokenizer.getNextToken();
-            j++;
+            // //Line/col
+            // actual = getSubstringByLineCol(lines, currentToken.location);
+            // expected = normalizeNewLine(srcChunk);
+            // assert.strictEqual(actual, expected);
         }
     };
 });
