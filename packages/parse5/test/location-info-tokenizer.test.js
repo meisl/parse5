@@ -123,29 +123,26 @@ const testCases = {
         ['var', ' ', 'a=c', ' ', '-', ' ', 'd;', '\n', 'a<--d;', '</script>', '<div>']
     ],
     'after <plaintext>': [MODE.PLAINTEXT, 'plaintext', ['Text', ' \n', 'Test</plaintext><div>']],
-    'one attribute, double-quoted': [MODE.DATA, 'body', [['<div ', 'id="foo"', '>']]],
-    'one attribute, single-quoted': [MODE.DATA, 'body', [['<div ', "id='foo'", '>']]],
+    'one attribute': [MODE.DATA, 'body', [['<div ', 'id1="foo"', '>'], ['<div ', "id2='single-quoted'", '>']]],
     'one attribute, unquoted': [MODE.DATA, 'body', [['<div ', 'id=foo', '>']]],
     'one attribute without value': [MODE.DATA, 'body', [['<div ', 'id', '>']]],
-    'two attributes with intermediate whitespace, double-quoted': [
+    'two attributes with intermediate whitespace': [
         MODE.DATA,
         'body',
-        [['<div ', 'id="foo" ', 'class="bar"', '>']]
+        [['<div ', 'id1="foo" ', 'class="bar"', '>'], ['<div ', "id2='single-quoted' ", "class='bar'", '>']]
     ],
-    'two attributes with newlines in between, double-quoted': [
+    'two attributes with newlines in between': [
         MODE.DATA,
         'body',
-        [['<div\n     ', 'id="foo"\n     ', 'class="bar"', '>']]
+        [
+            ['<div\n     ', 'id1="foo"\n     ', 'class="bar"', '>'],
+            ['<div\n     ', "id2='single-quoted'\n     ", "class='bar'", '>']
+        ]
     ],
-    'two attributes without intermediate whitespace, double-quoted': [
+    'two attributes with no whitespace in between': [
         MODE.DATA,
         'body',
-        [['<div ', 'id="foo"', 'class="bar"', '>']]
-    ],
-    'two attributes without intermediate whitespace, single-quoted': [
-        MODE.DATA,
-        'body',
-        [['<div ', "id='foo'", "class='bar'", '>']]
+        [['<div ', 'id1="foo"', 'class="bar"', '>'], ['<div ', "id2='single-quoted'", "class='bar'", '>']]
     ],
     'non-whiteSpace char ref after plain whitespace': [
         MODE.DATA,
@@ -171,7 +168,7 @@ const testCases = {
         MODE.DATA,
         'body',
         [
-            crossProduct([WHITESPACE_CHARS, ...WHITESPACE_REFS], WHITESPACE_REFS)
+            crossProduct([...WHITESPACE_CHARS, ...WHITESPACE_REFS], WHITESPACE_REFS)
                 .flatten()
                 .join('')
         ]
@@ -267,6 +264,8 @@ for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.
 
                 let srcChunk = htmlChunks[j++];
 
+                delete exp.attrs;
+
                 // array chunk means: START_TAG_TOKEN expected
                 if (Array.isArray(srcChunk)) {
                     const attrs = {};
@@ -282,8 +281,6 @@ for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.
                     }
                     exp.attrs = attrs;
                     srcChunk = srcChunk.join('');
-                } else {
-                    delete exp.attrs;
                 }
                 exp.update(srcChunk);
 
