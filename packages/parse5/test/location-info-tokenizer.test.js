@@ -8,12 +8,21 @@ const Mixin = require('../lib/utils/mixin');
 const { getSubstringByLineCol, normalizeNewLine, addSlashes } = require('../../../test/utils/common');
 
 const MODE = Tokenizer.MODE;
-const WHITESPACE_CHARS = ['\f', '\t', '\n', ' '];
+
+const NULL_REFS = ['&#0;', '&#x00;'];
+const NULL = ['\u0000'];
+
+const NBSP_REFS = ['&nbsp;', '&#160;', '&#xA0;'];
+const NBSP = [...NBSP_REFS, '\u00A0'];
+
 const TAB_REFS = ['&Tab;', '&#9;', '&#x9;'];
 const NEWLINE_REFS = ['&NewLine;', '&#10;', '&#xA;'];
 const FORMFEED_REFS = ['&#12;', '&#xC;'];
 const SPACE_REFS = ['&#32;', '&#x20;'];
+
 const WHITESPACE_REFS = [...TAB_REFS, ...NEWLINE_REFS, ...FORMFEED_REFS, ...SPACE_REFS];
+const WHITESPACE_CHARS = ['\t', '\n', '\f', ' '];
+const WHITESPACE = [...WHITESPACE_CHARS, ...WHITESPACE_REFS];
 
 /* helpers: array massaging */
 
@@ -124,56 +133,79 @@ const testCases = {
     ],
     'after <plaintext>': [MODE.PLAINTEXT, 'plaintext', ['Text', ' \n', 'Test</plaintext><div>']],
     'one attribute': [MODE.DATA, 'body', [['<div ', 'id1="foo"', '>'], ['<div ', "id2='single-quoted'", '>']]],
-    'one attribute, unquoted': [MODE.DATA, 'body', [['<div ', 'id=foo', '>']]],
+    'one attribute, unquoted': [
+        MODE.DATA,
+        'body',
+        [
+            ['<div ', 'id=foo', '>'],
+            ['<div ', 'id =foo', '>'],
+            ['<div ', 'id= foo', '>'],
+            ['<div ', 'id = foo', '>'],
+            ['<div\n', 'id = foo', '>']
+        ]
+    ],
     'one attribute without value': [MODE.DATA, 'body', [['<div ', 'id', '>']]],
     'two attributes with intermediate whitespace': [
         MODE.DATA,
         'body',
-        [['<div ', 'id1="foo" ', 'class="bar"', '>'], ['<div ', "id2='single-quoted' ", "class='bar'", '>']]
+        [
+            ['<div ', 'id="foo" ', 'class="bar"', '>'],
+            ['<div ', "id2='single-quoted' ", "class='bar'", '>'],
+            ['<div ', "id3 = 'single-quoted' ", "class= 'bar'", '>']
+        ]
     ],
     'two attributes with newlines in between': [
         MODE.DATA,
         'body',
         [
-            ['<div\n     ', 'id1="foo"\n     ', 'class="bar"', '>'],
-            ['<div\n     ', "id2='single-quoted'\n     ", "class='bar'", '>']
+            ['<div\n     ', 'id="foo"\n     ', 'class="bar"', '>'],
+            ['<div\n     ', "id2='single-quoted'\n     ", "class='bar'", '>'],
+            ['<div\n     ', "id3 = 'single-quoted'\n     ", "class= 'bar'", '>']
         ]
     ],
     'two attributes with no whitespace in between': [
         MODE.DATA,
         'body',
-        [['<div ', 'id1="foo"', 'class="bar"', '>'], ['<div ', "id2='single-quoted'", "class='bar'", '>']]
+        [
+            ['<div ', 'id ="foo"', 'class="bar"', '>'],
+            ['<div ', "id2='single-quoted'", "class='bar'", '>'],
+            ['<div ', "id3=   'single-quoted'", "class= 'bar'", '>'][
+                ('<div ', "id4  = 'single-quoted'", "class= 'bar'", '>')
+            ]
+        ]
     ],
-    'non-whiteSpace char ref after plain whitespace': [
+    'non-whitespace char-ref after plain whitespace': [
         MODE.DATA,
         'body',
         crossProduct(WHITESPACE_CHARS, ['&lt;', '&#60;', '&#x60;']).flatten()
     ],
-    'non-whiteSpace char ref after whitespace char ref': [
+    'non-whitespace char-ref after whitespace char-ref': [
         MODE.DATA,
         'body',
         crossProduct(WHITESPACE_REFS, ['&lt;', '&#60;', '&#x60;']).flatten()
     ],
-    '&nbsp; after plain whitespace': [
-        MODE.DATA,
-        'body',
-        crossProduct(WHITESPACE_CHARS, ['&nbsp;', '&#160;', '&#xA0;']).flatten()
-    ],
-    '&nbsp; after whitespace char ref': [
-        MODE.DATA,
-        'body',
-        crossProduct(WHITESPACE_REFS, ['&nbsp;', '&#160;', '&#xA0;']).flatten()
-    ],
-    'whiteSpace char ref after whitespace': [
+    'non-breaking-space after whitespace': [MODE.DATA, 'body', crossProduct(WHITESPACE, NBSP).flatten()],
+    'non-breaking-space char-ref after \\u0000': [MODE.DATA, 'body', crossProduct(['\u0000'], NBSP_REFS).flatten()],
+    'non-breaking-space character after \\u0000': [MODE.DATA, 'body', ['\u0000', '\u00A0']],
+    'non-breaking-space after non-whitespace': [
         MODE.DATA,
         'body',
         [
-            crossProduct([...WHITESPACE_CHARS, ...WHITESPACE_REFS], WHITESPACE_REFS)
+            crossProduct(['foo', '_', '&gt;'], NBSP)
                 .flatten()
                 .join('')
         ]
     ],
-    'whiteSpace char ref after non-whitespace': [
+    'whitespace char-ref after whitespace': [
+        MODE.DATA,
+        'body',
+        [
+            crossProduct(WHITESPACE, WHITESPACE_REFS)
+                .flatten()
+                .join('')
+        ]
+    ],
+    'whitespace char-ref after non-whitespace': [
         MODE.DATA,
         'body',
         [
@@ -182,7 +214,7 @@ const testCases = {
                 .join('')
         ]
     ],
-    'whiteSpace char ref after non-whitespace char ref': [
+    'whitespace char-ref after non-whitespace char-ref': [
         MODE.DATA,
         'body',
         [
@@ -191,8 +223,15 @@ const testCases = {
                 .join('')
         ]
     ],
-    'non-whiteSpace char ref after non-whitespace': [MODE.DATA, 'body', ['foo&lt;bar&#60;qmbl&#x3C;']],
-    '&nbsp; after non-whitespace': [MODE.DATA, 'body', ['foo&nbsp;bar&#160;qmbl&#xA0;']]
+    'non-whitespace char-ref after non-whitespace': [
+        MODE.DATA,
+        'body',
+        [
+            crossProduct(['foo', '_', '&gt;'], ['&lt;', '#60;', '&x3C;'])
+                .flatten()
+                .join('')
+        ]
+    ]
 };
 
 class ExpectedLocation {
