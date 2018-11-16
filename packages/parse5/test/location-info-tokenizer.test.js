@@ -8,6 +8,12 @@ const Mixin = require('../lib/utils/mixin');
 const { getSubstringByLineCol, normalizeNewLine, addSlashes } = require('../../../test/utils/common');
 
 const MODE = Tokenizer.MODE;
+const WHITESPACE_CHARS = ['\f', '\t', '\n', ' '];
+const TAB_REFS = ['&Tab;', '&#9;', '&#x9;'];
+const NEWLINE_REFS = ['&NewLine;', '&#10;', '&#xA;'];
+const FORMFEED_REFS = ['&#12;', '&#xC;'];
+const SPACE_REFS = ['&#32;', '&#x20;'];
+const WHITESPACE_REFS = [...TAB_REFS, ...NEWLINE_REFS, ...FORMFEED_REFS, ...SPACE_REFS];
 
 /* helpers: array massaging */
 
@@ -141,24 +147,49 @@ const testCases = {
         'body',
         [['<div ', "id='foo'", "class='bar'", '>']]
     ],
-    'non-whiteSpace char ref after whitespace': [
+    'non-whiteSpace char ref after plain whitespace': [
         MODE.DATA,
         'body',
-        crossProduct(['\f', '\t', '\n', ' '], ['&lt;', '&#60;', '&#x60;']).flatten()
+        crossProduct(WHITESPACE_CHARS, ['&lt;', '&#60;', '&#x60;']).flatten()
     ],
-    '&nbsp; after whitespace': [
+    'non-whiteSpace char ref after whitespace char ref': [
         MODE.DATA,
         'body',
-        crossProduct(['\f', '\t', '\n', ' '], ['&nbsp;', '&#160;', '&#xA0;']).flatten()
+        crossProduct(WHITESPACE_REFS, ['&lt;', '&#60;', '&#x60;']).flatten()
+    ],
+    '&nbsp; after plain whitespace': [
+        MODE.DATA,
+        'body',
+        crossProduct(WHITESPACE_CHARS, ['&nbsp;', '&#160;', '&#xA0;']).flatten()
+    ],
+    '&nbsp; after whitespace char ref': [
+        MODE.DATA,
+        'body',
+        crossProduct(WHITESPACE_REFS, ['&nbsp;', '&#160;', '&#xA0;']).flatten()
     ],
     'whiteSpace char ref after whitespace': [
         MODE.DATA,
         'body',
         [
-            crossProduct(
-                ['\f', '\t', '\n', ' '],
-                ['&Tab;', '&#9;', '&#x9;', '&NewLine;', '&#10;', '&#xA;', '&#12;', '&#xC;', '&#32;', '&#x20;']
-            )
+            crossProduct([WHITESPACE_CHARS, ...WHITESPACE_REFS], WHITESPACE_REFS)
+                .flatten()
+                .join('')
+        ]
+    ],
+    'whiteSpace char ref after non-whitespace': [
+        MODE.DATA,
+        'body',
+        [
+            crossProduct(['foo', '&not_a_char_ref;'], WHITESPACE_REFS)
+                .flatten()
+                .join('')
+        ]
+    ],
+    'whiteSpace char ref after non-whitespace char ref': [
+        MODE.DATA,
+        'body',
+        [
+            crossProduct(['&nbsp;', '&lt;', '&#60;', '&#x60;'], WHITESPACE_REFS)
                 .flatten()
                 .join('')
         ]
@@ -236,8 +267,8 @@ for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.
 
                 let srcChunk = htmlChunks[j++];
 
+                // array chunk means: START_TAG_TOKEN expected
                 if (Array.isArray(srcChunk)) {
-                    // indicates an expected START_TAG_TOKEN
                     const attrs = {};
                     // "<", tagName and whitespace up till first attr at index 0
                     let c = srcChunk[0],
