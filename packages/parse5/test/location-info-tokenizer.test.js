@@ -43,6 +43,13 @@ function flatten() {
  *   * string chunks: expected location is calculated from length (and previous chunks)
  *   * array chunks: these imply an expected START_TAG_TOKEN, which has additional
  *     location info for attributes.
+ *     1. element must be the "<" plus the tagName and all whitespace up to the first attr name
+ *     then one element per attribute (name, "=" and value) plus any trailing whitespace
+ *     last element must be the ">" or "/>"
+ *     Example:
+ *     the fragment '<div id="foo" class="bar">' is expected to yield a START_TAG_TOKEN
+ *     with two attributes.
+ *     -> ['<div ', 'id="foo" ', 'class="bar"', '>']
  */
 
 const testCases = {
@@ -57,7 +64,6 @@ const testCases = {
             '\n',
             '<head>',
             '\n   ',
-            '<meta charset="utf-8">',
             ['<meta ', 'charset="utf-8"', '>'],
             '<title>',
             '   ',
@@ -67,9 +73,9 @@ const testCases = {
             '\n',
             '</head>',
             '\n',
-            '<body id="front">',
+            ['<body ', 'id="front"', '>'],
             '\n',
-            '<div id="intro">',
+            ['<div ', 'id="intro"', '>'],
             '\n   ',
             '<p\n>',
             '\n       ',
@@ -85,7 +91,7 @@ const testCases = {
             ' ',
             'on',
             '\n       ',
-            '<a href="http://code.google.com/p/v8/">',
+            ['<a ', 'href="http://code.google.com/p/v8/"', '>'],
             '\n       ',
             "Chrome's",
             ' ',
@@ -111,6 +117,30 @@ const testCases = {
         ['var', ' ', 'a=c', ' ', '-', ' ', 'd;', '\n', 'a<--d;', '</script>', '<div>']
     ],
     'after <plaintext>': [MODE.PLAINTEXT, 'plaintext', ['Text', ' \n', 'Test</plaintext><div>']],
+    'one attribute, double-quoted': [MODE.DATA, 'body', [['<div ', 'id="foo"', '>']]],
+    'one attribute, single-quoted': [MODE.DATA, 'body', [['<div ', "id='foo'", '>']]],
+    'one attribute, unquoted': [MODE.DATA, 'body', [['<div ', 'id=foo', '>']]],
+    'one attribute without value': [MODE.DATA, 'body', [['<div ', 'id', '>']]],
+    'two attributes with intermediate whitespace, double-quoted': [
+        MODE.DATA,
+        'body',
+        [['<div ', 'id="foo" ', 'class="bar"', '>']]
+    ],
+    'two attributes with newlines in between, double-quoted': [
+        MODE.DATA,
+        'body',
+        [['<div\n     ', 'id="foo"\n     ', 'class="bar"', '>']]
+    ],
+    'two attributes without intermediate whitespace, double-quoted': [
+        MODE.DATA,
+        'body',
+        [['<div ', 'id="foo"', 'class="bar"', '>']]
+    ],
+    'two attributes without intermediate whitespace, single-quoted': [
+        MODE.DATA,
+        'body',
+        [['<div ', "id='foo'", "class='bar'", '>']]
+    ],
     'non-whiteSpace char ref after whitespace': [
         MODE.DATA,
         'body',
@@ -137,6 +167,40 @@ const testCases = {
     '&nbsp; after non-whitespace': [MODE.DATA, 'body', ['foo&nbsp;bar&#160;qmbl&#xA0;']]
 };
 
+class ExpectedLocation {
+    constructor() {
+        this.startLine = 1;
+        this.startCol = 1;
+        this.startOffset = 0;
+        this.endLine = 1;
+        this.endCol = 1;
+        this.endOffset = 0;
+    }
+    createCopy() {
+        return Object.assign(new ExpectedLocation(), this);
+    }
+    update(srcChunk) {
+        this.startOffset = this.endOffset;
+        this.endOffset += srcChunk.length;
+        // The \n itself - emitted as (part of) a WHITESPACE_CHARACTER_TOKEN - is considered
+        // the very last character of a line, and the new line starts right after it.
+        // Therefore the next token's startLine is the previous token's endLine,
+        // and likewise for startCol and endCol.
+        this.startLine = this.endLine;
+        this.startCol = this.endCol;
+        // For endLine and endCol, we take the simplest approach possible:
+        for (const ch of srcChunk) {
+            if (ch === '\n') {
+                this.endCol = 1;
+                this.endLine++;
+            } else {
+                this.endCol++;
+            }
+        }
+        return this;
+    }
+}
+
 for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.entries(testCases)) {
     const testIdx = Object.keys(exports).length;
     let testName = `Location info (Tokenizer) ${testIdx}` + ` - [${initialMode}/${lastStartTagName}]`;
@@ -151,7 +215,7 @@ for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.
 
             Mixin.install(tokenizer, LocationInfoTokenizerMixin);
 
-            htmlChunks.forEach(chunk => tokenizer.write(chunk, false));
+            htmlChunks.forEach(chunk => tokenizer.write(Array.isArray(chunk) ? chunk.join('') : chunk, false));
             tokenizer.write('', true);
 
             // NOTE: set small waterline for testing purposes
@@ -159,14 +223,7 @@ for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.
             tokenizer.state = initialMode;
             tokenizer.lastStartTagName = lastStartTagName;
 
-            let exp = {
-                startOffset: 0,
-                startLine: 1,
-                startCol: 1,
-                endOffset: 0,
-                endLine: 1,
-                endCol: 1
-            };
+            let exp = new ExpectedLocation();
 
             let nextToken = tokenizer.getNextToken();
             let j = 0;
@@ -177,37 +234,46 @@ for (const [description, [initialMode, lastStartTagName, htmlChunks]] of Object.
                     continue;
                 }
 
-                const srcChunk = htmlChunks[j++];
+                let srcChunk = htmlChunks[j++];
 
-                exp.startOffset = exp.endOffset;
-                exp.endOffset += srcChunk.length;
-                // The \n itself - emitted as (part of) a WHITESPACE_CHARACTER_TOKEN - is considered
-                // the very last character of a line, and the new line starts right after it.
-                // Therefore the next token's startLine is the previous token's endLine,
-                // and likewise for startCol and endCol.
-                exp.startLine = exp.endLine;
-                exp.startCol = exp.endCol;
-                for (const ch of srcChunk) {
-                    if (ch === '\n') {
-                        exp.endCol = 1;
-                        exp.endLine++;
-                    } else {
-                        exp.endCol++;
+                if (Array.isArray(srcChunk)) {
+                    // indicates an expected START_TAG_TOKEN
+                    const attrs = {};
+                    // "<", tagName and whitespace up till first attr at index 0
+                    let c = srcChunk[0],
+                        attrLoc = exp.createCopy().update(c);
+                    for (let k = 1; k < srcChunk.length - 1; k++) {
+                        c = srcChunk[k];
+                        const i = c.indexOf('=');
+                        const attrName = c.substring(0, i < 0 ? c.length : i).trim();
+                        attrs[attrName] = attrLoc.createCopy().update(c.trim());
+                        attrLoc.update(c); // now with trailing whitespace
                     }
+                    exp.attrs = attrs;
+                    srcChunk = srcChunk.join('');
+                } else {
+                    delete exp.attrs;
                 }
+                exp.update(srcChunk);
 
-                assert.deepStrictEqual(
-                    currentToken.location,
-                    exp,
-                    `location @ source chunk #${j - 1}` +
-                        `\nchunk #${j - 1}: '${addSlashes(srcChunk)}'` +
-                        `\ntoken #${j - 1}: ${util.inspect(currentToken)}\n` +
-                        `\nchunk #${j}: ${j == htmlChunks.length ? '-' : "'" + addSlashes(htmlChunks[j]) + "'"}` +
-                        `\ntoken #${j}: ${util.inspect(nextToken)}\n`
-                );
+                let msg = `location @ source chunk #${j - 1}`;
+                msg += `\nchunk #${j - 1}: '${addSlashes(srcChunk)}'`;
+                msg += `\ntoken #${j - 1}: ${util.inspect(currentToken, { depth: 3 })}\n`;
+                msg += `\nchunk #${j}: `;
+                if (j == htmlChunks.length) {
+                    msg += '-';
+                } else if (Array.isArray(htmlChunks[j])) {
+                    msg += `['${htmlChunks[j].map(addSlashes).join("', '")}']`;
+                } else {
+                    msg += `'${addSlashes(htmlChunks[j])}'`;
+                }
+                msg += `\ntoken #${j}: ${util.inspect(nextToken, { depth: 3 })}\n`;
+                //msg += `\nexpected location: ${util.inspect(exp)}`;
+
+                assert.deepEqual(currentToken.location, exp, msg);
 
                 // The old assertions; un-comment for sanity-checking
-                const html = htmlChunks.join('');
+                const html = htmlChunks.map(chunk => (Array.isArray(chunk) ? chunk.join('') : chunk)).join('');
                 const lines = html.split(/\r?\n/g);
 
                 //Offsets
